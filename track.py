@@ -22,21 +22,24 @@ import torch.backends.cudnn as cudnn
 import numpy as np
 import threading
 import pyrealsense2 as rs
+import math
 
 # 쓰레드종료 알림 변수 (기본False, 종료요청True)
 stopThread_flag = False
 
 # 테스트용 전역변수
-target_xval = 0.5
-distance_val = 0.0
-obs_val = 0
+target_xval = 0.5 # 객체의 x좌표
+distance_val = 0.0 # 객체의 거리 
+obs_val = 0 # 가까운 장애물의 거리 
+following_pers = 0 # 추적타겟
+center_p = 0 # 중앙에 가장 가까운 객체의 id
 
 # 파이프라인fifo 쓰레드함수
 def fifoThread ():
-    global stopThread_flag
-    global target_xval
-    global distance_val
-    global obs_val
+    global stopThread_flag # 쓰레드 종료flag
+    global target_xval # fifo 사물의x좌표 전달 변수
+    global distance_val # fifo 거리데이터 전달 변수
+    global obs_val  # 멈추기위한 장애물과의 거리 
 
     print("fifo thread on")
     if not os.path.exists('/tmp/from_yolo_fifo'):
@@ -47,45 +50,56 @@ def fifoThread ():
     fd_from_yolo = os.open("/tmp/from_yolo_fifo", os.O_RDWR)
     fd_to_yolo = os.open("/tmp/to_yolo_fifo", os.O_RDWR)
 
+    
+
     while True:
-        # 타겟의 x좌표의 오른쪽에있고, 오른쪽으로 회전하기 위한값을 fifo로전달
-        if target_xval > 0.9:
-            buff_a = 'A'
-        elif target_xval > 0.8:
-            buff_a = 'B'
-        elif target_xval > 0.7:
-            buff_a = 'C'
-        elif target_xval > 0.6:
-            buff_a = 'D'
+        # 장애물이 없으면.
+        if obs_val == 0:
+            # 타겟의 x좌표의 오른쪽에있고, 오른쪽으로 회전하기 위한값을 fifo로전달
+            if target_xval > 0.9:
+                buff_a = 'A'
+            elif target_xval > 0.8:
+                buff_a = 'B'
+            elif target_xval > 0.7:
+                buff_a = 'C'
+            elif target_xval > 0.6:
+                buff_a = 'D'
 
-        # 타겟의 x좌표가 왼쪽에있고, 왼쪽으로 회전하기 위한값을 fifo로전달
-        elif target_xval < 0.4:
-            buff_a = 'E'
-        elif target_xval < 0.3:
-            buff_a = 'F'
-        elif target_xval < 0.2:
-            buff_a = 'G'
-        elif target_xval < 0.1:
-            buff_a = 'H'
+            # 타겟의 x좌표가 왼쪽에있고, 왼쪽으로 회전하기 위한값을 fifo로전달
+            elif target_xval < 0.4:
+                buff_a = 'E'
+            elif target_xval < 0.3:
+                buff_a = 'F'
+            elif target_xval < 0.2:
+                buff_a = 'G'
+            elif target_xval < 0.1:
+                buff_a = 'H'
 
-        # 타겟의 x좌표가 중앙 0.5에 있을때
-        else:
-            # 타겟과의 거리가 멀리있을때 전진
-            if distance_val > 80.0:
-                buff_a = 'c'
-            # 타겟과의 거리가 가까이있을때 후진 # 후진할필요없으면 주석처리
-            # elif distance_val < 0.5:
-            #     buff_a = 'd'
-            # 타겟과의 거리가 적당거리일떄 멈춤
+            # 타겟의 x좌표가 중앙 0.5에 있을때
             else:
-                buff_a = 'i'
+                # 타겟과의 거리가 멀리있을때 전진
+                if distance_val > 80.0:
+                    buff_a = 'c'
+                # 타겟과의 거리가 가까이있을때 후진
+                # elif distance_val < 0.5:
+                #     buff_a = 'd'
+                # 타겟과의 거리가 적당거리일떄 멈춤
+                else:
+                    buff_a = 'i'
 	
-        print(buff_a)
-        # 파일에 fifo로 쓰기 문자열은 .encode()해서 보내야함
-        os.write(fd_from_yolo, buff_a.encode())
-        time.sleep(1)
+            print(buff_a)
+            # 파일에 fifo로 쓰기 문자열은 .encode()해서 보내야함
+            os.write(fd_from_yolo, buff_a.encode())
+            time.sleep(1)
+        # 장애물이 있으면 obs_val == 1
+        else:
+            buff_a = 'i'
+            os.write(fd_from_yolo, buff_a.encode())
+            print(buff_a, " : WARNING. Obstacle come closing ")
 
         if stopThread_flag == True: # 종료문
+            buff_a = 'i'
+            os.write(fd_from_yolo, buff_a.encode())
             break
 
     print("fifo thread off")
@@ -116,9 +130,9 @@ def detect(opt):
     global stopThread_flag # 쓰레드 종료명령
     global target_xval # 쓰레드 사물의x좌표 전달 변수
     global distance_val # 쓰레드 거리데이터 전달 변수
-
-    # 추적할 person타겟 초기화 
-    targeting_pers = 1 
+    global following_pers  # 추적할 person타겟 초기화 
+    global center_p # 중앙에 가장 가까운 id
+    global obs_val # 멈추기위한 장애물과의 거리 
 
     # initialize deepsort 초기화
     cfg = get_config()
@@ -178,7 +192,7 @@ def detect(opt):
     # fifo쓰레드 생성
     t1 = threading.Thread(target = fifoThread, args=())
     # 쓰레드 생성실패시
-    if t1 == 0: 
+    if t1 is None: 
          os.exit()
     else: # 성공시
          t1.start()
@@ -234,11 +248,14 @@ def detect(opt):
 
             # 장애물 외곽선 연결선
             box_cnt = 0 # 박스번호
+            close_Obs_flag = 0 # 근접한 장애물
             for contour in contours:
                 # convexHull 나머지 모든점을 포함하는 다각형을 만들어내는 알고리즘 = 장애물 외곽선
                 conhull = cv2.convexHull(contour)
                 hull = np.max(conhull, axis=1)
                 maxbox = np.max(hull, axis=1)
+
+                
                 # 최대값x와 최소값x을 뺀 절대값이 (노란박스크기가)작은건 안그려지게한다
                 if abs(max(maxbox) - min(maxbox)) > 90:  
                     cv2.drawContours(contours_images, [conhull], 0, (0, 255, 255), 3)  
@@ -253,23 +270,20 @@ def detect(opt):
                             min_x = count
                     cv2.circle(contours_images, max_x, 3, (255, 0, 0), 2, cv2.LINE_AA)  # 최우측 좌표에 파란
                     cv2.circle(contours_images, min_x, 3, (255, 255, 0), 2, cv2.LINE_AA)  # 최좌측 좌표에 청록
+                    # 장애물하나당 거리값 구해오는 함수
                     obs_depth = location_to_depth(depth_grayimg, min_x, max_x, depth_data)
-                    if obs_depth < 300.00: #최소 장애물과의 거리
-                        # 오른쪽에서 시작된 장애물 (맨오른쪽좌표가 화면끝과 연결됨)
-                        if max_x[0] >= 638:
-                            obs_val = float(min_x[0])
-                        # 왼쪽에서 시작된 장애물 (맨왼쪽좌표가 화면끝과 연결됨)
-                        elif min_x[0] <= 28:
-                            obs_val = float(max_x[0])                  
-                        # 중앙 장애물
-                        else:
-                            obs_val = float(max_x[0]+min_x[0])
+                    #print(obs_depth)
+                # 최소 장애물과의 거리. 이에 아래값에 도달할경우 거리값전달 멈추기
+                    if obs_depth < 50.0:
+                        close_Obs_flag = 1
 
-                        print(box_cnt,"번째 장애물의 거리 = {} cm // x위치값 = {}".format(obs_depth,obs_val))
-                    box_cnt = box_cnt + 1
-                
-                else: # 장애물이 없는상태
-                    obs_val = 0
+                # 박스 다음번호로
+                box_cnt = box_cnt + 1
+                # 검출된 노란박스중에 가까운박스(close_Obs_flag)가 있으면 멈추는명령 쓰레드로전달
+                if close_Obs_flag:
+                    obs_val = 1 #멈춤
+                else:
+                    obs_val = 0 #없음
 
             cv2.imshow("src", contours_images)
 
@@ -297,7 +311,8 @@ def detect(opt):
                 # pass detections to deepsort
                 outputs = deepsort.update(xywhs.cpu(), confs.cpu(), clss.cpu(), im0)
                 
-                # draw boxes for visualization
+                boxCent_list = []
+                # 박스 하나당 draw boxes for visualization
                 if len(outputs) > 0:
                     for j, (output, conf) in enumerate(zip(outputs, confs)): 
                         
@@ -315,17 +330,23 @@ def detect(opt):
                         depth_w = (w-20) * 23 // 35
                         depth_h = h * 2 // 3
                         
-                        
                         start_left =  depth_w * (output[0] / w) + (w-20) // 7 # 왼쪽위 x좌표
                         start_top =  depth_h * (output[1] / h) + h // 6 # 왼쪽위 y좌표
                         end_left =  depth_w * (output[2] / w) + (w-20) // 7 # 오른쪽아래 x좌표
                         end_top =  depth_h * (output[3] / h) + h // 6 # 오른쪽아래 y좌표  
-
+			
+                        # 박스의 중앙값들 리스트로 전
+                        x_center = (start_left + end_left) // 2
+                        y_center = (start_top + end_top) // 2
+                        boxCent_list.append([id, x_center,y_center])
+			
+                        # 뎁스와 다른 컬러맵의 왼쪽 끝 잘라내기
                         if output[0] >= 20:
                             bboxes2 = np.array([start_left, start_top, end_left, end_top])  
                         else:
                             bboxes2 = np.array([(w-20) // 7, start_top, end_left, end_top])
                         annotator2.box_label(bboxes2, label, color=colors(c, True))
+
 
                         if save_txt:
                             # to MOT format
@@ -337,28 +358,43 @@ def detect(opt):
                             with open(txt_path, 'a') as f:
                                f.write(('%g ' * 10 + '\n') % (frame_idx, id, bbox_left,
                                                            bbox_top, bbox_w, bbox_h, -1, -1, -1, -1))  # label format
-                        #print((start_left+end_left))
-                        #print("start_left", start_left)
-                        #print(type(start_left))
+
                         dep_x, dep_y = int((start_left+end_left)//2),int((start_top+end_top)//2)
                         target_distacne = depth_data.get_distance(dep_x, dep_y)
-                        cv2.circle(dm0,(dep_x, dep_y),3,(0,0,255),1,cv2.LINE_AA)
+                        cv2.circle(dm0,(dep_x, dep_y),2,(0,0,122),1,cv2.LINE_AA)
 
                         # 타겟의 거리가 적당한것만 (오류제외)
                         if 0.01 < target_distacne < 7.0:
-                            # 내가 원하는 타겟 person
-                            if targeting_pers == id:
+                            # 맨처음 키자마자 추적할놈은?
+                            if following_pers == 0:
+                                following_pers = center_p
+                            # print ("현재 타겟 {}를 추적중입니다.".format(following_pers)) 
+                            # 내가 원하는 타겟 person 만 쫒아가게하려면. following_pers값을 조정
+                            if following_pers == id:
                                 # 타켓person의 x축위치를 fifo쓰레드로 전달
                                 target_xval = ((start_left + end_left) / 2) / w
                                 # 타켓person의 거리를 fifo쓰레드로 전달 
                                 distance_val = int(target_distacne * 100)
-                                print(id,":타겟 person과의 거리 = {:.2f} cm".format(target_distacne * 100))
-                            # 타겟외에 다른 person
-                            else:
-                                print(id,":person과의 거리 = {:.2f} cm".format(target_distacne * 100))
+                                print("{} : 타겟 person과의 거리 = {:.2f} cm".format(id, target_distacne * 100))
 
-                        # class의 target : person 0 id -> 2,3,4,5을 바꿔가며 쫒아가는
-                        
+                            # 타겟외에 다른 person
+                            #else:
+                            #    print(id,":person과의 거리 = {:.2f} cm".format(target_distacne * 100))
+
+                        # class의 target : person 0 id -> 2,3,4,5을 바꿔가며 쫒아가는달
+
+                    # 중앙값리스틀 가장 중앙에서 가까운 박스찾기
+                    max_center = [0, 1000.0] # 임시변수 초기값 [초기id, 중앙에서 가장먼거리]
+                    cv2.circle(dm0, (320,240), 3, (255, 0, 255), 2, cv2.LINE_AA)
+                    for name, x, y in boxCent_list:
+                        name_x= abs(320 - x)
+                        name_y= abs(240 - y)
+                        dist_fromCent = math.sqrt(name_x**2 + name_y**2) #중앙으로 부터의 거리
+                        if max_center[1] > dist_fromCent:
+                            max_center = name, dist_fromCent 
+                    center_p = max_center[0] #id와 중앙부터거리 center_p[0],[1]에 저장
+                    #print("중앙에서 가장 가까운 객체id:{}, 거리:{} ".format(max_center[0],int(max_center[1])))
+                    
 
             else:
                 deepsort.increment_ages()
@@ -367,7 +403,7 @@ def detect(opt):
           
 
             # 객체A 검출에 걸리는 시간 (inference + NMS)
-            print('%sDone. (%.3fs)' % (s, t2 - t1))
+            #print('%sDone. (%.3fs)' % (s, t2 - t1))
 
             # Stream results
             im0 = annotator.result()
@@ -377,10 +413,15 @@ def detect(opt):
                 cv2.imshow("dm0", dm0)
 
                 inputKey = cv2.waitKey(1)
-                if inputKey == ord('q') or inputKey == 27:  # q to quit
+                if inputKey == ord('q') or inputKey == 27:  # q or esc to quit
                     # 쓰레드 종료명령
                     stopThread_flag = True
+                    # 종료 
                     raise StopIteration
+                elif inputKey == ord('a'):
+                    following_pers = center_p
+                    inputKey = 0
+                    
 
             # 영상 저장 (image with detections)
             if save_vid:

@@ -1,2 +1,2 @@
-python3 track.py --source 2 --yolo_weight yolov5s.pt --show-vid
+python3 track.py --source 2 --yolo_weight yolov5s.pt --show-vid --class 0
 

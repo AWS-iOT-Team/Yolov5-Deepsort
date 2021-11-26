@@ -1,4 +1,4 @@
-# 딥소트 수정중
+# 차체 딥소트 수행결과 수정 진행중
 
 # Yolov5 + Deep Sort with PyTorch
 
@@ -77,8 +77,6 @@ $ python track.py --source 0 --yolo_weights yolov5s.pt --img 640
 
 ## Filter tracked classes
 
-By default the tracker tracks all MS COCO classes.
-
 If you only want to track persons I recommend you to get [these weights](https://drive.google.com/file/d/1gglIwqxaH2iTvy6lZlXuAcMpd_U0GCUb/view?usp=sharing) for increased performance
 
 ```bash
@@ -88,30 +86,6 @@ python3 track.py --source 0 --yolo_weights yolov5/weights/crowdhuman_yolov5m.pt 
 If you want to track a subset of the MS COCO classes, add their corresponding index after the classes flag
 
 ```bash
-python3 track.py --source 0 --yolo_weights yolov5s.pt --classes 16 17  # tracks cats and dogs, only
+python3 track.py --source 0 --yolo_weights yolov5s.pt --classes 0 
 ```
 
-[Here](https://tech.amikelive.com/node-718/what-object-categories-labels-are-in-coco-dataset/) is a list of all the possible objects that a Yolov5 model trained on MS COCO can detect. Notice that the indexing for the classes in this repo starts at zero.
-
-
-## MOT compliant results
-
-Can be saved to `inference/output` by 
-
-```bash
-python3 track.py --source ... --save-txt
-```
-
-
-## Cite
-
-If you find this project useful in your research, please consider cite:
-
-```latex
-@misc{yolov5deepsort2020,
-    title={Real-time multi-object tracker using YOLOv5 and deep sort},
-    author={Mikel Broström},
-    howpublished = {\url{https://github.com/mikel-brostrom/Yolov5_DeepSort_Pytorch}},
-    year={2020}
-}
-```
